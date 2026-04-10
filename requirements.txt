@@ -1,0 +1,10 @@
+flask==3.1.0
+flask-cors==5.0.0
+python-dotenv==1.0.1
+google-cloud-spanner==3.51.0
+google-cloud-aiplatform==1.91.0
+vertexai==1.91.0
+numpy==2.2.4
+sqlparse==0.5.3
+requests==2.32.3
+gunicorn==23.0.0

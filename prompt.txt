@@ -1,0 +1,54 @@
+## Objective
+Create an automated evaluation system for a multi-agent workflow that is able to perform various testing and error identification for both individual sub-agents and the sytstem as a whole.
+
+## Multi-Agent System
+The system is composed of the following sub-agents:
+- Router agent: routes NLQ to a specialized pre-joined table route or to the general route (which has access to the entire database)
+- Schema selecter agent: selects relevant schemas from semantic layer (schemas are chunked by table)
+- Text-to-sql agent: writes SQL using selected schemas, user's NLQ, and other additional context
+- Synthesizer agent: provides commentary on the SQL query results and describes query filters
+
+## Additional System Components
+- Data dictionary or semantic layer: the database which the text-to-SQL agent queries has documentation which describes 1) what each field contains and 2) how to query each field/what filters to apply
+- Curriculum View: the text-to-SQL agent has a long-term memory where it stores SQL queries that both successfully ran and fully adhered to all business rule filters
+
+## First Iteration Implementation
+For this first iteration of this system, I want to be able to evaluate the system as a whole. We will set up evalutations for individual sub-agents or steps later.
+
+I want to be able to test the system as a whole (so just from NLQ to final synthesizer response).
+
+I want to follow the following principles:
+- Avoid data leakage, I do not want to test the agent on any examples in the sub-agent prompts, examples in the semantic layer, OR examples in the curriculum. Before running a test against the agent, always ensure that the questions being used are not present in either source. I want you to use vector embeddings for checking against the curriculum_view and an LLM to check against the prompts.
+- Have a representative distribution of both tables (aka nouns) queried and tasks (aka the way in which they are queried) in the NLQs used to test the agent
+- For test NLQs, have the ability to assign active testing status which signifies more rigorous testing (i.e. at least 5-10 examples for the table and task combination) or assign robust monitoring status (i.e. 2-3 examples for the table and task combination). The reason I want this distinction is I do not want rigorous testing for tables/tasks that we have already made robust, I want to just focus on newer questions that the agent is taking on
+
+Using those principles above, I want to be able to answer the following questions:
+- What % of questions failed outright (e.g., no results returned or SQL didn't run)
+- What % of questions that ran but likely did not adequately adhere to querying rules defined in prompts
+- What % of questions that passed (should 1 - fails)
+- What was the average run time of the questions (I want to be able to see total overall average and average broken down by route, task, table, number of joins, etc.)
+- How do the above metrics compare to other evaluation runs (i.e., I want to be able to compare any two evaluation runs against one another and even compare several runs at once -- up to 10 at least.)
+
+## Implementation
+
+I want you to use the following to implement this:
+- Use Python
+- The agent that you will be testing will be built using Google's ADK (I will show you the agent scripts later). You will need to be able to locally run questions against an agent in ADK.
+- Use a .env file to store secrets such as GCP API keys and Spanner information to be able to query the curriculum view. Add any other variables necessary.
+- Store all results in a local database such as sqlite
+- Show results using a dashboard interface
+- Build the dashboard backend using Flask and React for the front-end 
+
+## Aesthetics
+This only applies to the frontend:
+- Dark background with a subtle grid dot/line texture overlay
+- Playfiar display (serif) for headings 
+- DM Mono for labels, tags, and metadata
+- DM Sans for body text
+- Per-tool accent colors
+- Cards with thin colored top border
+- Dot-rating system
+- Monospaced ALL-CAPS small labels above each section
+- Minimal borders
+
+claude --resume "t2s-eval-system-implementation"
