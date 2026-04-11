@@ -43,16 +43,17 @@ export default function Seed() {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr>
-              {["Table", "Task", "Current", "Target", "Needed"].map((h) => (
+              {["Table", "Task", "Tone", "Current", "Target", "Needed"].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "6px 12px", borderBottom: `1px solid ${colors.border}`, color: colors.textMuted, fontFamily: fonts.mono, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase" }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {strata.map((s) => (
-              <tr key={`${s.table_name}-${s.task}`}>
+              <tr key={`${s.table_name}-${s.task}-${s.tone}`}>
                 <td style={tdS}>{s.table_name}</td>
                 <td style={tdS}>{s.task}</td>
+                <td style={{ ...tdS, color: toneColor(s.tone), fontFamily: fonts.mono }}>{s.tone}</td>
                 <td style={tdS}>{s.current_count}</td>
                 <td style={tdS}>{s.target_count}</td>
                 <td style={{ ...tdS, color: s.needed > 0 ? colors.review : colors.passed, fontWeight: s.needed > 0 ? 700 : 400 }}>
@@ -93,8 +94,12 @@ export default function Seed() {
           </div>
 
           {report.strata_detail.map((d) => (
-            <div key={`${d.table_name}-${d.task}`} style={{ marginBottom: spacing.md, borderTop: `1px solid ${colors.border}`, paddingTop: spacing.sm }}>
-              <MonoLabel>{d.table_name} / {d.task} — {d.needed} needed, {d.generated} generated</MonoLabel>
+            <div key={`${d.table_name}-${d.task}-${d.tone}`} style={{ marginBottom: spacing.md, borderTop: `1px solid ${colors.border}`, paddingTop: spacing.sm }}>
+              <MonoLabel>
+                {d.table_name} / {d.task} /
+                <span style={{ color: toneColor(d.tone) }}> {d.tone}</span>
+                {" "}— {d.needed} needed, {d.generated} generated
+              </MonoLabel>
               {d.proposed.length > 0 && (
                 <ul style={{ margin: 0, paddingLeft: 20 }}>
                   {d.proposed.map((q, i) => (
@@ -114,6 +119,10 @@ const tdS: React.CSSProperties = {
   padding: "7px 12px",
   borderBottom: `1px solid ${colors.border}`,
 };
+
+function toneColor(tone: string): string {
+  return tone === "casual" ? "#f5a623" : tone === "formal" ? "#7c6af7" : "#888";
+}
 
 function seedBtn(accent: string): React.CSSProperties {
   return {

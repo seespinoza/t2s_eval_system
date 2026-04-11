@@ -30,6 +30,7 @@ def list_questions(
     status: str | None = None,
     table_name: str | None = None,
     task: str | None = None,
+    tone: str | None = None,
     leakage_checked: bool | None = None,
     page: int = 1,
     page_size: int = 50,
@@ -51,6 +52,10 @@ def list_questions(
         conditions.append("task = @task")
         params["task"] = task
         pt["task"] = param_types.STRING
+    if tone:
+        conditions.append("tone = @tone")
+        params["tone"] = tone
+        pt["tone"] = param_types.STRING
     if leakage_checked is not None:
         conditions.append("leakage_checked = @leakage_checked")
         params["leakage_checked"] = leakage_checked
@@ -77,16 +82,17 @@ def get_question(question_id: str) -> Question | None:
     return None
 
 
-def create_question(nlq: str, table_name: str, task: str, status: str = "active",
-                    is_seeded: bool = False, notes: str | None = None) -> Question:
+def create_question(nlq: str, table_name: str, task: str, tone: str = "neutral",
+                    status: str = "active", is_seeded: bool = False,
+                    notes: str | None = None) -> Question:
     qid = str(uuid.uuid4())
 
     def _tx(transaction):
         transaction.insert(
             T_QUESTIONS,
-            columns=["id", "nlq", "table_name", "task", "status", "is_seeded",
+            columns=["id", "nlq", "table_name", "task", "tone", "status", "is_seeded",
                      "leakage_checked", "notes", "created_at", "updated_at"],
-            values=[[qid, nlq, table_name, task, status, is_seeded,
+            values=[[qid, nlq, table_name, task, tone, status, is_seeded,
                      False, notes, COMMIT_TS, COMMIT_TS]],
         )
 
@@ -95,7 +101,7 @@ def create_question(nlq: str, table_name: str, task: str, status: str = "active"
 
 
 def update_question(question_id: str, **fields) -> Question | None:
-    allowed = {"nlq", "table_name", "task", "status", "notes", "leakage_checked", "leakage_check_id"}
+    allowed = {"nlq", "table_name", "task", "tone", "status", "notes", "leakage_checked", "leakage_check_id"}
     update = {k: v for k, v in fields.items() if k in allowed}
     if not update:
         return get_question(question_id)
@@ -118,13 +124,13 @@ def bulk_insert_questions(rows: list[dict]) -> int:
     def _tx(transaction):
         values = [
             [str(uuid.uuid4()), r["nlq"], r["table_name"], r["task"],
-             r.get("status", "active"), r.get("is_seeded", False),
+             r.get("tone", "neutral"), r.get("status", "active"), r.get("is_seeded", False),
              False, r.get("notes"), COMMIT_TS, COMMIT_TS]
             for r in rows
         ]
         transaction.insert(
             T_QUESTIONS,
-            columns=["id", "nlq", "table_name", "task", "status", "is_seeded",
+            columns=["id", "nlq", "table_name", "task", "tone", "status", "is_seeded",
                      "leakage_checked", "notes", "created_at", "updated_at"],
             values=values,
         )
@@ -287,9 +293,9 @@ def insert_result(result: Result) -> None:
             T_RESULTS, columns=Result.COLUMNS,
             values=[[
                 result.run_id, result.id, result.question_id, result.nlq_snapshot,
-                result.outcome, result.sql_generated, result.agent_response,
-                result.judge_verdict, result.judge_confidence, result.judge_reasoning,
-                result.runtime_ms, result.route, result.join_count,
+                result.tone_snapshot, result.outcome, result.sql_generated,
+                result.agent_response, result.judge_verdict, result.judge_confidence,
+                result.judge_reasoning, result.runtime_ms, result.route, result.join_count,
                 result.error_message, result.started_at, result.completed_at,
             ]],
         )
@@ -498,15 +504,17 @@ def compute_and_store_metrics(run_id: str) -> RunMetrics:
     by_table: dict = {}
     by_task: dict = {}
     by_joins: dict = {}
+    by_tone: dict = {}
 
     with get_eval_db().snapshot() as snapshot:
         for row in snapshot.execute_sql(
-            f"SELECT r.outcome, r.runtime_ms, r.route, r.join_count, q.table_name, q.task "
+            f"SELECT r.outcome, r.runtime_ms, r.route, r.join_count, "
+            f"q.table_name, q.task, r.tone_snapshot "
             f"FROM {T_RESULTS} r JOIN {T_QUESTIONS} q ON r.question_id = q.id "
             "WHERE r.run_id = @run_id",
             params={"run_id": run_id}, param_types={"run_id": param_types.STRING},
         ):
-            outcome, runtime_ms, route, join_count, table_name, task = row
+            outcome, runtime_ms, route, join_count, table_name, task, tone_snapshot = row
             outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
             if runtime_ms:
                 runtimes.append(runtime_ms)
@@ -515,6 +523,7 @@ def compute_and_store_metrics(run_id: str) -> RunMetrics:
                 (by_table, table_name or "unknown"),
                 (by_task, task or "unknown"),
                 (by_joins, str(join_count) if join_count is not None else "unknown"),
+                (by_tone, tone_snapshot or "unknown"),
             ]:
                 if key not in gd:
                     gd[key] = {"total": 0, "passed": 0, "failed": 0,
@@ -547,6 +556,7 @@ def compute_and_store_metrics(run_id: str) -> RunMetrics:
         metrics_json={
             "by_route": _summarize(by_route), "by_table": _summarize(by_table),
             "by_task": _summarize(by_task), "by_joins": _summarize(by_joins),
+            "by_tone": _summarize(by_tone),
         },
         computed_at=None,
     )

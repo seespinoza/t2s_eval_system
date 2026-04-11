@@ -6,6 +6,7 @@ import Compare from "./pages/Compare";
 import Questions from "./pages/Questions";
 import ReviewQueue from "./pages/ReviewQueue";
 import Seed from "./pages/Seed";
+import LlmUsage from "./pages/LlmUsage";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="questions" element={<Questions />} />
           <Route path="review" element={<ReviewQueue />} />
           <Route path="seed" element={<Seed />} />
+          <Route path="llm-usage" element={<LlmUsage />} />
         </Route>
       </Routes>
     </BrowserRouter>

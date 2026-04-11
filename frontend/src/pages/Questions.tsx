@@ -10,11 +10,11 @@ export default function Questions() {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const { questions, loading, reload } = useQuestions(filters);
   const [editing, setEditing] = useState<Question | null>(null);
-  const [editForm, setEditForm] = useState({ nlq: "", status: "active", notes: "" });
+  const [editForm, setEditForm] = useState({ nlq: "", tone: "neutral", status: "active", notes: "" });
 
   const openEdit = (q: Question) => {
     setEditing(q);
-    setEditForm({ nlq: q.nlq, status: q.status, notes: q.notes || "" });
+    setEditForm({ nlq: q.nlq, tone: q.tone || "neutral", status: q.status, notes: q.notes || "" });
   };
 
   const saveEdit = async () => {
@@ -66,6 +66,21 @@ export default function Questions() {
             {s}
           </button>
         ))}
+        {(["casual", "neutral", "formal"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setFilters(f => ({ ...f, tone: f.tone === t ? "" : t }))}
+            style={{
+              padding: "4px 12px", borderRadius: 100, fontSize: 12, cursor: "pointer",
+              background: filters.tone === t ? `${toneColor(t)}25` : "transparent",
+              border: `1px solid ${filters.tone === t ? toneColor(t) : colors.border}`,
+              color: filters.tone === t ? toneColor(t) : colors.textMuted,
+              fontFamily: fonts.mono,
+            }}
+          >
+            {t}
+          </button>
+        ))}
         <button
           onClick={() => setFilters(f => ({ ...f, leakage_checked: f.leakage_checked === "false" ? "" : "false" }))}
           style={{
@@ -104,6 +119,7 @@ export default function Questions() {
                   <div style={{ fontSize: 14, marginBottom: 4 }}>{q.nlq}</div>
                   <div style={{ display: "flex", gap: spacing.sm, alignItems: "center", flexWrap: "wrap" }}>
                     <StatusBadge status={q.status} />
+                    <span style={{ fontSize: 11, color: toneColor(q.tone), fontFamily: fonts.mono, border: `1px solid ${toneColor(q.tone)}50`, borderRadius: 100, padding: "1px 7px" }}>{q.tone}</span>
                     <span style={{ fontSize: 11, color: colors.textMuted, fontFamily: fonts.mono }}>{q.table_name} / {q.task}</span>
                     {q.is_seeded && <span style={{ fontSize: 11, color: colors.seed, fontFamily: fonts.mono }}>seeded</span>}
                     <span style={{ fontSize: 11, color: q.leakage_checked ? colors.passed : colors.review, fontFamily: fonts.mono }}>
@@ -141,6 +157,16 @@ export default function Questions() {
               rows={3}
               style={{ width: "100%", background: colors.bg, border: `1px solid ${colors.border}`, color: colors.text, padding: 8, borderRadius: 4, fontFamily: fonts.body, fontSize: 14, marginBottom: spacing.md, resize: "vertical" }}
             />
+            <MonoLabel>Tone</MonoLabel>
+            <select
+              value={editForm.tone}
+              onChange={(e) => setEditForm(f => ({ ...f, tone: e.target.value }))}
+              style={{ width: "100%", background: colors.bg, border: `1px solid ${colors.border}`, color: colors.text, padding: 8, borderRadius: 4, marginBottom: spacing.md }}
+            >
+              <option value="casual">casual</option>
+              <option value="neutral">neutral</option>
+              <option value="formal">formal</option>
+            </select>
             <MonoLabel>Status</MonoLabel>
             <select
               value={editForm.status}
@@ -180,4 +206,8 @@ function actionBtn(accent: string): React.CSSProperties {
     border: `1px solid ${accent}40`, color: accent,
     cursor: "pointer", borderRadius: 6, fontSize: 13, fontFamily: fonts.body,
   };
+}
+
+function toneColor(tone: string): string {
+  return tone === "casual" ? "#f5a623" : tone === "formal" ? "#7c6af7" : "#888";
 }

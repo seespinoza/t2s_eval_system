@@ -6,7 +6,8 @@ CREATE TABLE Questions (
     nlq              STRING(MAX) NOT NULL,
     table_name       STRING(256) NOT NULL,
     task             STRING(256) NOT NULL,
-    status           STRING(32)  NOT NULL,
+    tone             STRING(32)  NOT NULL DEFAULT ('neutral'),  -- 'casual' | 'neutral' | 'formal'
+    status           STRING(32)  NOT NULL,                      -- 'active' | 'monitoring' | 'deleted'
     is_seeded        BOOL        NOT NULL DEFAULT (FALSE),
     leakage_checked  BOOL        NOT NULL DEFAULT (FALSE),
     leakage_check_id STRING(36),
@@ -15,8 +16,9 @@ CREATE TABLE Questions (
     updated_at       TIMESTAMP   NOT NULL OPTIONS (allow_commit_timestamp=true),
 ) PRIMARY KEY (id);
 
-CREATE INDEX QuestionsByTableTask ON Questions(table_name, task);
-CREATE INDEX QuestionsByStatus    ON Questions(status);
+CREATE INDEX QuestionsByTableTaskTone ON Questions(table_name, task, tone);
+CREATE INDEX QuestionsByStatus        ON Questions(status);
+CREATE INDEX QuestionsByTone          ON Questions(tone);
 
 CREATE TABLE LeakageChecks (
     id                    STRING(36)  NOT NULL,
@@ -54,6 +56,7 @@ CREATE TABLE Results (
     id                STRING(36)  NOT NULL,
     question_id       STRING(36)  NOT NULL,
     nlq_snapshot      STRING(MAX) NOT NULL,
+    tone_snapshot     STRING(32),  -- snapshot of question.tone at eval time
     outcome           STRING(32)  NOT NULL,
     sql_generated     STRING(MAX),
     agent_response    STRING(MAX),
@@ -89,6 +92,23 @@ CREATE TABLE ReviewItems (
 
 CREATE INDEX ReviewByRunId  ON ReviewItems(run_id);
 CREATE NULL_FILTERED INDEX ReviewPending ON ReviewItems(review_decision);
+
+-- LLM call telemetry (all Gemini calls across judges, leakage checks, and seeding)
+CREATE TABLE LlmCallLogs (
+    id            STRING(36)  NOT NULL,
+    run_id        STRING(36),            -- NULL for calls outside an eval run (seeder, etc.)
+    question_id   STRING(36),            -- NULL for non-per-question calls
+    call_type     STRING(64)  NOT NULL,  -- 'judge' | 'leakage_llm' | 'hyde_hypothetical' | 'seed_generate' | 'discover_strata'
+    model         STRING(128),
+    input_tokens  INT64,
+    output_tokens INT64,
+    total_tokens  INT64,
+    latency_ms    INT64,
+    called_at     TIMESTAMP   NOT NULL OPTIONS (allow_commit_timestamp=true),
+) PRIMARY KEY (id);
+
+CREATE INDEX LlmCallsByRun      ON LlmCallLogs(run_id);
+CREATE INDEX LlmCallsByCalledAt ON LlmCallLogs(called_at DESC);
 
 CREATE TABLE RunMetrics (
     run_id               STRING(36) NOT NULL,

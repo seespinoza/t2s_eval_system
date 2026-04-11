@@ -15,12 +15,14 @@ async function req<T>(path: string, options?: RequestInit): Promise<T> {
 // ── Questions ──────────────────────────────────────────────────────────────
 
 export type QuestionStatus = "active" | "monitoring" | "deleted";
+export type QuestionTone = "casual" | "neutral" | "formal";
 
 export interface Question {
   id: string;
   nlq: string;
   table_name: string;
   task: string;
+  tone: QuestionTone;
   status: QuestionStatus;
   is_seeded: boolean;
   leakage_checked: boolean;
@@ -87,6 +89,7 @@ export interface Result {
   id: string;
   question_id: string;
   nlq_snapshot: string;
+  tone_snapshot: string | null;
   outcome: string;
   sql_generated: string | null;
   agent_response: string | null;
@@ -134,6 +137,7 @@ export interface RunMetrics {
     by_table: Record<string, unknown>;
     by_task: Record<string, unknown>;
     by_joins: Record<string, unknown>;
+    by_tone: Record<string, unknown>;
   } | null;
   computed_at: string;
   run_name?: string;
@@ -155,13 +159,49 @@ export const metricsApi = {
     req<Record<string, unknown>>(`/metrics/breakdown/${runId}`),
   timeseries: (limit = 50) =>
     req<TimeseriesPoint[]>(`/metrics/timeseries?limit=${limit}`),
+  llmCalls: (runId: string) =>
+    req<LlmCall[]>(`/metrics/llm-calls/${runId}`),
+  llmSummary: (runId: string) =>
+    req<LlmSummary>(`/metrics/llm-summary/${runId}`),
 };
+
+// ── LLM Usage ──────────────────────────────────────────────────────────────
+
+export interface LlmCall {
+  id: string;
+  question_id: string | null;
+  call_type: string;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  latency_ms: number | null;
+  called_at: string;
+}
+
+export interface LlmSummary {
+  totals: {
+    calls: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    avg_latency_ms: number | null;
+  };
+  by_call_type: Record<string, {
+    calls: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    avg_latency_ms: number | null;
+  }>;
+}
 
 // ── Seeder ─────────────────────────────────────────────────────────────────
 
 export interface Stratum {
   table_name: string;
   task: string;
+  tone: string;
   description: string;
   current_count: number;
   target_count: number;

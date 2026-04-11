@@ -12,6 +12,7 @@ def get_strata():
         {
             "table_name": s.table_name,
             "task": s.task,
+            "tone": s.tone,
             "description": s.description,
             "current_count": s.current_count,
             "target_count": s.target_count,

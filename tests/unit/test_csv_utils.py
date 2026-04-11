@@ -9,6 +9,7 @@ def _make_question(**kwargs) -> Question:
         nlq="How many orders were placed?",
         table_name="orders",
         task="aggregation",
+        tone="neutral",
         status="active",
         is_seeded=False,
         leakage_checked=True,

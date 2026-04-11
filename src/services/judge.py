@@ -1,9 +1,11 @@
 """Gemini-based LLM judge and prompt leakage checker."""
 import json
+import time
 from dataclasses import dataclass
 import vertexai
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 from src.config.settings import get_config
+from src.services import llm_logger
 
 _model: GenerativeModel | None = None
 
@@ -15,6 +17,20 @@ def _get_model() -> GenerativeModel:
         vertexai.init(project=cfg.vertex_ai_project, location=cfg.vertex_ai_location)
         _model = GenerativeModel(cfg.judge_model)
     return _model
+
+
+def _generate(prompt: str, config: GenerationConfig, call_type: str):
+    """Thin wrapper around generate_content that records latency and token usage."""
+    t0 = time.monotonic()
+    response = _get_model().generate_content(prompt, generation_config=config)
+    latency_ms = int((time.monotonic() - t0) * 1000)
+
+    usage = getattr(response, "usage_metadata", None)
+    input_tokens = getattr(usage, "prompt_token_count", None) if usage else None
+    output_tokens = getattr(usage, "candidates_token_count", None) if usage else None
+    llm_logger.log_call(call_type, input_tokens=input_tokens,
+                        output_tokens=output_tokens, latency_ms=latency_ms)
+    return response
 
 
 @dataclass
@@ -55,10 +71,7 @@ Evaluate whether the SQL query:
 Respond in JSON:
 {{"verdict": "pass" or "fail", "confidence": <float 0.0-1.0>, "reasoning": "<concise explanation>"}}
 """
-    response = _get_model().generate_content(
-        prompt,
-        generation_config=GenerationConfig(response_mime_type="application/json", temperature=0.1),
-    )
+    response = _generate(prompt, GenerationConfig(response_mime_type="application/json", temperature=0.1), "judge")
     data = json.loads(response.text)
     return JudgeResult(
         verdict=data["verdict"],
@@ -84,44 +97,80 @@ Is the test question substantially similar (same intent, same entities, same fil
 
 Respond in JSON: {{"flagged": true or false, "reasoning": "<brief explanation>"}}
 """
-    response = _get_model().generate_content(
-        prompt,
-        generation_config=GenerationConfig(response_mime_type="application/json", temperature=0.1),
-    )
+    response = _generate(prompt, GenerationConfig(response_mime_type="application/json", temperature=0.1), "leakage_llm")
     data = json.loads(response.text)
     return LlmLeakageResult(flagged=bool(data["flagged"]), reasoning=data.get("reasoning", ""))
 
 
+_TONE_INSTRUCTIONS = {
+    "formal": (
+        "Use precise, technical language. Questions should be verbose and unambiguous, "
+        "like those written by a data analyst in a formal report request. "
+        'Example style: "What is the total aggregate revenue, broken down by product category, for the fiscal year ending Q4?"'
+    ),
+    "neutral": (
+        "Use clear, professional but conversational language, like a business analyst asking a colleague. "
+        'Example style: "What were the top 5 products by revenue last quarter?"'
+    ),
+    "casual": (
+        "Use informal, shorthand language — potentially terse or ambiguous, like a Slack message. "
+        'Example style: "how many orders last month?" or "top customers by spend?"'
+    ),
+}
+
+
+def generate_hypothetical_question(
+    table_name: str, task: str, tone: str, schema_text: str,
+) -> str:
+    """Generate a single hypothetical 'ideal' question for HyDE-based curriculum retrieval."""
+    tone_instruction = _TONE_INSTRUCTIONS.get(tone, _TONE_INSTRUCTIONS["neutral"])
+    prompt = f"""Generate a single representative natural language question for a text-to-SQL system.
+
+TABLE: {table_name}
+TASK TYPE: {task}
+TONE: {tone}
+TONE GUIDANCE: {tone_instruction}
+
+TABLE SCHEMA:
+{schema_text}
+
+Return ONLY a JSON object: {{"question": "<the question>"}}
+"""
+    response = _generate(prompt, GenerationConfig(response_mime_type="application/json", temperature=0.5), "hyde_hypothetical")
+    data = json.loads(response.text)
+    return str(data.get("question", "")).strip()
+
+
 def generate_questions_for_stratum(
-    table_name: str, task: str, schema_text: str,
-    curriculum_examples: list[str], count: int,
+    table_name: str, task: str, tone: str, schema_text: str,
+    examples: list[str], count: int,
 ) -> list[str]:
-    exclusion = ""
-    if curriculum_examples:
-        exclusion = "\nExisting examples to AVOID duplicating:\n" + "\n".join(
-            f"- {ex}" for ex in curriculum_examples[:50]
+    tone_instruction = _TONE_INSTRUCTIONS.get(tone, _TONE_INSTRUCTIONS["neutral"])
+    few_shot = ""
+    if examples:
+        few_shot = "\nExample questions (for style reference — do NOT copy these):\n" + "\n".join(
+            f"- {ex}" for ex in examples[:10]
         ) + "\n"
 
     prompt = f"""You are generating test questions for a text-to-SQL evaluation system.
 
 TABLE: {table_name}
 TASK TYPE: {task}
+TONE: {tone}
+TONE GUIDANCE: {tone_instruction}
 
 TABLE SCHEMA AND DOCUMENTATION:
 {schema_text}
-{exclusion}
+{few_shot}
 Generate exactly {count} natural language questions that:
 1. Are clearly answerable using the {table_name} table
 2. Require the "{task}" type of SQL operation
-3. Are NOT substantially similar to any existing example above
-4. Sound like questions a business analyst would ask
+3. Match the "{tone}" tone described above
+4. Are NOT copies of any example above (those are style references only)
 
 Return ONLY a JSON array of strings: ["question 1", "question 2", ...]
 """
-    response = _get_model().generate_content(
-        prompt,
-        generation_config=GenerationConfig(response_mime_type="application/json", temperature=0.7),
-    )
+    response = _generate(prompt, GenerationConfig(response_mime_type="application/json", temperature=0.7), "seed_generate")
     questions = json.loads(response.text)
     if not isinstance(questions, list):
         return []
@@ -150,10 +199,7 @@ join_related_table, rank_top_n, trend_over_time, compare_groups, search_by_name.
 Return ONLY a JSON array:
 [{{"table_name": "...", "task": "...", "description": "brief description"}}, ...]
 """
-    response = _get_model().generate_content(
-        prompt,
-        generation_config=GenerationConfig(response_mime_type="application/json", temperature=0.3),
-    )
+    response = _generate(prompt, GenerationConfig(response_mime_type="application/json", temperature=0.3), "discover_strata")
     strata = json.loads(response.text)
     if not isinstance(strata, list):
         return []

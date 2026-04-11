@@ -12,7 +12,7 @@ COMMIT_TIMESTAMP = _spanner.COMMIT_TIMESTAMP
 
 from src.config.settings import get_config
 from src.core.models import Question, Result
-from src.services import adk_client, judge, spanner_eval
+from src.services import adk_client, judge, spanner_eval, llm_logger
 from src.services.spanner_source import get_all_table_schemas
 from src.utils.sql_parser import count_joins, extract_table_names
 
@@ -64,56 +64,60 @@ def _evaluate_question(
     result_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
 
-    adk_resp = adk_client.send_nlq(question.nlq)
-    completed_at = datetime.now(timezone.utc)
+    llm_logger.set_context(run_id=run_id, question_id=question.id, model=cfg.judge_model)
+    try:
+        adk_resp = adk_client.send_nlq(question.nlq)
+        completed_at = datetime.now(timezone.utc)
 
-    if adk_resp.error or not adk_resp.sql_generated:
+        if adk_resp.error or not adk_resp.sql_generated:
+            return Result(
+                run_id=run_id, id=result_id, question_id=question.id,
+                nlq_snapshot=question.nlq, tone_snapshot=question.tone, outcome="failed",
+                sql_generated=None, agent_response=adk_resp.agent_response,
+                judge_verdict=None, judge_confidence=None, judge_reasoning=None,
+                runtime_ms=adk_resp.runtime_ms, route=adk_resp.route,
+                join_count=0, error_message=adk_resp.error,
+                started_at=started_at, completed_at=completed_at,
+            )
+
+        join_count = count_joins(adk_resp.sql_generated)
+
+        try:
+            judge_result = judge.judge_result(
+                nlq=question.nlq,
+                sql=adk_resp.sql_generated,
+                agent_response=adk_resp.agent_response or "",
+                business_rules_summary=business_rules,
+            )
+        except Exception as e:
+            log.error("Judge failed for question %s: %s", question.id, e)
+            judge_result = judge.JudgeResult(verdict="fail", confidence=0.0, reasoning=str(e))
+
+        threshold = cfg.judge_confidence_threshold
+        if judge_result.verdict == "fail":
+            outcome = "rule_violation"
+        elif judge_result.confidence >= threshold:
+            outcome = "passed"
+        else:
+            outcome = "low_confidence_pass"
+
         return Result(
             run_id=run_id, id=result_id, question_id=question.id,
-            nlq_snapshot=question.nlq, outcome="failed",
-            sql_generated=None, agent_response=adk_resp.agent_response,
-            judge_verdict=None, judge_confidence=None, judge_reasoning=None,
-            runtime_ms=adk_resp.runtime_ms, route=adk_resp.route,
-            join_count=0, error_message=adk_resp.error,
-            started_at=started_at, completed_at=completed_at,
+            nlq_snapshot=question.nlq, tone_snapshot=question.tone, outcome=outcome,
+            sql_generated=adk_resp.sql_generated,
+            agent_response=adk_resp.agent_response,
+            judge_verdict=judge_result.verdict,
+            judge_confidence=judge_result.confidence,
+            judge_reasoning=judge_result.reasoning,
+            runtime_ms=adk_resp.runtime_ms,
+            route=adk_resp.route,
+            join_count=join_count,
+            error_message=None,
+            started_at=started_at,
+            completed_at=completed_at,
         )
-
-    join_count = count_joins(adk_resp.sql_generated)
-
-    try:
-        judge_result = judge.judge_result(
-            nlq=question.nlq,
-            sql=adk_resp.sql_generated,
-            agent_response=adk_resp.agent_response or "",
-            business_rules_summary=business_rules,
-        )
-    except Exception as e:
-        log.error("Judge failed for question %s: %s", question.id, e)
-        judge_result = judge.JudgeResult(verdict="fail", confidence=0.0, reasoning=str(e))
-
-    threshold = cfg.judge_confidence_threshold
-    if judge_result.verdict == "fail":
-        outcome = "rule_violation"
-    elif judge_result.confidence >= threshold:
-        outcome = "passed"
-    else:
-        outcome = "low_confidence_pass"
-
-    return Result(
-        run_id=run_id, id=result_id, question_id=question.id,
-        nlq_snapshot=question.nlq, outcome=outcome,
-        sql_generated=adk_resp.sql_generated,
-        agent_response=adk_resp.agent_response,
-        judge_verdict=judge_result.verdict,
-        judge_confidence=judge_result.confidence,
-        judge_reasoning=judge_result.reasoning,
-        runtime_ms=adk_resp.runtime_ms,
-        route=adk_resp.route,
-        join_count=join_count,
-        error_message=None,
-        started_at=started_at,
-        completed_at=completed_at,
-    )
+    finally:
+        llm_logger.clear_context()
 
 
 def _write_result(result: Result) -> None:

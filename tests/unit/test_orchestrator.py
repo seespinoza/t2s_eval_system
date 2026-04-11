@@ -16,12 +16,13 @@ from src.services.judge import JudgeResult
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-def _make_question(id=None, nlq="How many orders?") -> Question:
+def _make_question(id=None, nlq="How many orders?", tone="neutral") -> Question:
     return Question(
         id=id or str(uuid.uuid4()),
         nlq=nlq,
         table_name="orders",
         task="aggregation",
+        tone=tone,
         status="active",
         is_seeded=False,
         leakage_checked=True,
@@ -174,7 +175,7 @@ class TestWriteResult:
     def _make_result(self, outcome, confidence=0.9) -> Result:
         return Result(
             run_id="run-1", id="res-1", question_id="q-1",
-            nlq_snapshot="Test?", outcome=outcome,
+            nlq_snapshot="Test?", tone_snapshot="neutral", outcome=outcome,
             sql_generated="SELECT 1", agent_response="ok",
             judge_verdict="pass", judge_confidence=confidence,
             judge_reasoning="reason", runtime_ms=100, route="r",

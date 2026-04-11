@@ -16,7 +16,7 @@ from src.services import leakage
 def _make_question(id="q-1", nlq="How many orders were placed?") -> Question:
     return Question(
         id=id, nlq=nlq, table_name="orders", task="aggregation",
-        status="active", is_seeded=False, leakage_checked=False,
+        tone="neutral", status="active", is_seeded=False, leakage_checked=False,
         leakage_check_id=None, notes=None, created_at=None, updated_at=None,
     )
 

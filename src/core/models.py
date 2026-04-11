@@ -12,12 +12,16 @@ def _ts(val) -> str | None:
     return str(val)
 
 
+VALID_TONES = {"casual", "neutral", "formal"}
+
+
 @dataclass
 class Question:
     id: str
     nlq: str
     table_name: str
     task: str
+    tone: str
     status: str
     is_seeded: bool
     leakage_checked: bool
@@ -26,15 +30,16 @@ class Question:
     created_at: Any
     updated_at: Any
 
-    COLUMNS = ["id", "nlq", "table_name", "task", "status", "is_seeded",
+    COLUMNS = ["id", "nlq", "table_name", "task", "tone", "status", "is_seeded",
                "leakage_checked", "leakage_check_id", "notes", "created_at", "updated_at"]
 
     @classmethod
     def from_row(cls, row) -> Question:
         return cls(
             id=row[0], nlq=row[1], table_name=row[2], task=row[3],
-            status=row[4], is_seeded=bool(row[5]), leakage_checked=bool(row[6]),
-            leakage_check_id=row[7], notes=row[8], created_at=row[9], updated_at=row[10],
+            tone=row[4] or "neutral", status=row[5], is_seeded=bool(row[6]),
+            leakage_checked=bool(row[7]), leakage_check_id=row[8],
+            notes=row[9], created_at=row[10], updated_at=row[11],
         )
 
     def to_dict(self) -> dict:
@@ -123,6 +128,7 @@ class Result:
     id: str
     question_id: str
     nlq_snapshot: str
+    tone_snapshot: str | None
     outcome: str
     sql_generated: str | None
     agent_response: str | None
@@ -136,7 +142,7 @@ class Result:
     started_at: Any
     completed_at: Any
 
-    COLUMNS = ["run_id", "id", "question_id", "nlq_snapshot", "outcome",
+    COLUMNS = ["run_id", "id", "question_id", "nlq_snapshot", "tone_snapshot", "outcome",
                "sql_generated", "agent_response", "judge_verdict",
                "judge_confidence", "judge_reasoning", "runtime_ms", "route",
                "join_count", "error_message", "started_at", "completed_at"]
@@ -145,10 +151,11 @@ class Result:
     def from_row(cls, row) -> Result:
         return cls(
             run_id=row[0], id=row[1], question_id=row[2], nlq_snapshot=row[3],
-            outcome=row[4], sql_generated=row[5], agent_response=row[6],
-            judge_verdict=row[7], judge_confidence=row[8], judge_reasoning=row[9],
-            runtime_ms=row[10], route=row[11], join_count=row[12],
-            error_message=row[13], started_at=row[14], completed_at=row[15],
+            tone_snapshot=row[4], outcome=row[5], sql_generated=row[6],
+            agent_response=row[7], judge_verdict=row[8], judge_confidence=row[9],
+            judge_reasoning=row[10], runtime_ms=row[11], route=row[12],
+            join_count=row[13], error_message=row[14], started_at=row[15],
+            completed_at=row[16],
         )
 
     def to_dict(self) -> dict:

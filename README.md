@@ -16,19 +16,27 @@ User NLQ → Router → Schema Selector → Text-to-SQL → Synthesizer → Resp
 
 Evaluation is **end-to-end**: the system submits a natural language question (NLQ) and receives the final synthesized response, including the SQL the agent generated internally. No intermediate steps are stubbed or bypassed.
 
-### Question Bank
+### Question Bank and Stratification
 
-All test questions live in a managed **question bank** stored in Spanner. Every question is tagged with the table it targets and the type of query it exercises (its *task* — e.g. aggregation, filter, join). This stratification is what allows the system to reason about coverage gaps rather than treating the question set as a flat list.
+All test questions live in a managed **question bank** stored in Spanner. Every question is tagged along three dimensions:
+
+- **Table** — the primary table the question targets
+- **Task** — the type of SQL operation required (e.g. `aggregate_sum`, `filter_by_date`, `join_related_table`, `rank_top_n`)
+- **Tone** — the formality level of the question: `casual`, `neutral`, or `formal`
+
+Tone reflects how real users phrase queries. Formal questions are precise and verbose ("What is the total aggregate revenue, broken down by product category, for the fiscal year ending Q4?"). Casual questions are terse and potentially ambiguous ("top customers by spend?"). The agent should handle all three, so metrics are broken down by tone to detect regression in any register.
+
+This three-dimensional stratification (`table × task × tone`) is what allows the system to reason about **coverage gaps** rather than treating the question set as a flat list. The seeder computes how many questions each stratum currently has and generates exactly the number needed to meet targets.
 
 Questions enter the bank in three ways:
 
-1. **LLM auto-seeding** — the system discovers all logical `(table, task)` strata from the source semantic layer, computes how many questions each stratum is short of its target count, and calls Gemini to generate exactly the needed number per stratum.
+1. **LLM auto-seeding** — the system discovers all logical `(table, task)` strata from the source semantic layer, expands each across the three tones, and calls Gemini to generate exactly the needed questions per stratum.
 2. **Dashboard CRUD** — individual questions can be created, edited, or soft-deleted through the web UI.
-3. **CSV import** — the full question bank can be exported as a CSV, edited offline (by SMEs who aren't close to the code), and re-imported. Only `nlq`, `status`, and `notes` are mutable via CSV import to prevent bulk corruption of the stratification structure.
+3. **CSV import** — the full question bank can be exported as a CSV, edited offline by domain experts, and re-imported. Only `nlq`, `status`, and `notes` are mutable via CSV to prevent bulk corruption of the stratification metadata.
 
 ### Data Leakage Prevention
 
-Before any question is used in an evaluation run, it must pass a two-part leakage check. The concern is that a test question might already appear — verbatim or semantically — in the agent's own prompt examples, making the test a memorization check rather than a generalization check.
+Before any question is used in an evaluation run, it must pass a two-part **leakage check**. The concern is that a test question might already appear — verbatim or semantically — in the agent's own prompt examples, turning the evaluation into a memorization test rather than a generalization test.
 
 **Check A — Embedding similarity vs. curriculum:**
 The question is embedded via Vertex AI (`text-embedding-004`) and compared against a cached corpus of all curriculum NLQs from the source Spanner database. If cosine similarity exceeds the configured threshold (default 0.85), the question is flagged.
@@ -36,7 +44,20 @@ The question is embedded via Vertex AI (`text-embedding-004`) and compared again
 **Check B — LLM comparison vs. prompt examples:**
 The system globs all `*.py` files in the agent repository, extracts strings from variables named `examples`, `sample_queries`, `nlq`, etc., and passes them to Gemini alongside the test question. Gemini returns a JSON verdict on whether the test question is substantially similar to any prompt example.
 
-Both checks must pass. Questions that fail are not excluded automatically — they remain in the bank and are marked as failed for human review. This preserves the audit trail. Only questions with `leakage_checked = true` are eligible to be included in a run.
+Both checks must pass. Questions that fail are not automatically excluded — they remain in the bank marked as failed, preserving the audit trail. Only questions with `leakage_checked = true` are eligible for a run.
+
+### Seeding with HyDE (Hypothetical Document Embeddings)
+
+When generating questions for a new stratum, the system uses HyDE to find the most relevant real examples from the curriculum to use as few-shot guidance for Gemini:
+
+1. For each `(table, task, tone)` stratum, Gemini first generates one *hypothetical ideal question* — a representative example of what a good question for this stratum would look like.
+2. That hypothetical question is embedded and compared against all curriculum NLQ embeddings using cosine similarity.
+3. The top-k most similar curriculum questions are retrieved, but each candidate is filtered out if it:
+   - Already exists in the question bank (would be a duplicate)
+   - Is too similar to a known agent prompt example (would introduce leakage)
+4. The surviving candidates are passed as few-shot style examples to Gemini, which generates the actual questions for the stratum.
+
+This approach produces questions that are stylistically and semantically grounded in real usage patterns, without copying them.
 
 ### Run Lifecycle
 
@@ -45,8 +66,8 @@ A run is a snapshot evaluation of the entire eligible question bank (or a filter
 1. **Pending** — a run record is created with optional filter config (e.g. `active` questions only).
 2. **Running** — the orchestrator starts the ADK server as a subprocess, snapshots the full list of eligible question IDs into `question_ids_json`, sets `status = running`, and begins parallel evaluation via a thread pool.
 3. **Per-question evaluation** — each worker thread calls the ADK HTTP endpoint with one NLQ, parses the SQL from the response, counts JOINs, and calls the Gemini judge.
-4. **Outcome mapping** — each result is classified into one of four outcomes (see below) and written to Spanner immediately. Results are written one at a time as they complete, never batched, so no work is lost if the process is interrupted.
-5. **Completed** — after all questions finish, the orchestrator computes aggregate metrics, writes them to `RunMetrics`, and sets `status = completed`.
+4. **Outcome mapping** — each result is classified into one of four outcomes (see below) and written to Spanner immediately as it completes. Results are never batched, so no work is lost if the process is interrupted mid-run.
+5. **Completed** — after all questions finish, the orchestrator computes aggregate metrics (including breakdowns by route, table, task, tone, and join count), writes them to `RunMetrics`, and sets `status = completed`.
 
 ### Outcome Classification
 
@@ -57,17 +78,28 @@ A run is a snapshot evaluation of the entire eligible question bank (or a filter
 | `rule_violation` | Judge verdict is `fail` |
 | `failed` | ADK error, timeout, or no SQL returned |
 
-The confidence threshold mirrors the approach used with ML classifiers: a "pass" with 55% confidence is not the same as one with 95% confidence. Low-confidence passes are surfaced in a separate human review queue so a domain expert can confirm or override the verdict before the result is treated as a genuine pass.
+The confidence threshold mirrors the approach used with ML classifiers: a "pass" with 55% confidence is not the same as one with 95% confidence. Low-confidence passes are surfaced in a separate human review queue so a domain expert can confirm or override before the result counts as a genuine pass.
 
 ### LLM Judge
 
-The judge receives the original NLQ, the SQL the agent generated, the full synthesized response, and a summary of the source schema / business rules. It returns three fields:
+The judge receives the original NLQ, the SQL the agent generated, the full synthesized response, and a summary of the source schema and business rules. It returns three fields:
 
 - `verdict` — `pass` or `fail`
 - `confidence` — a float from 0.0 to 1.0
 - `reasoning` — a plain-English explanation of the decision
 
-The judge uses Gemini via Vertex AI with `response_mime_type: "application/json"` and a defined schema, so there is no fragile regex parsing of LLM output.
+The judge uses Gemini via Vertex AI with `response_mime_type: "application/json"`, so there is no fragile regex parsing of LLM output.
+
+### LLM Call Telemetry
+
+Every Gemini call made during a run — including judging, seeding, leakage checks, and HyDE generation — is logged to the `LlmCallLogs` Spanner table with:
+
+- `call_type` — what the call was for (`judge`, `leakage_llm`, `seed_generate`, `hyde_hypothetical`, `discover_strata`)
+- `input_tokens`, `output_tokens`, `total_tokens` — from the response's `usage_metadata`
+- `latency_ms` — wall-clock time for the API call
+- `run_id` and `question_id` — for attribution
+
+This data powers the **LLM Usage** dashboard page, which shows per-call latency and token usage over the course of a run, a 10-call rolling average on latency, and a per-call-type breakdown table. Use it to track cost trends across runs and spot expensive outliers.
 
 ### Checkpoint and Resume
 
@@ -77,7 +109,154 @@ Resume is deterministic: the original question IDs were snapshotted into `questi
 
 ### Human Review Queue
 
-Any `low_confidence_pass` result automatically creates a `ReviewItems` row. Reviewers see the NLQ, the judge's confidence (rendered as a 10-dot rating), and the judge's reasoning. They can either confirm the pass or override it to a fail. Review decisions are written in-place but rows are never deleted — the full audit trail is preserved.
+Any `low_confidence_pass` result automatically creates a `ReviewItems` row. Reviewers see the NLQ, the judge's confidence (rendered as a 10-dot rating), and the judge's reasoning. They can confirm the pass or override it to a fail. Review decisions are written in-place but rows are never deleted — the full audit trail is preserved.
+
+---
+
+## Quick Start Guide
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- A Google Cloud project with the following APIs enabled:
+  - Cloud Spanner
+  - Vertex AI
+  - (For the runner) Google ADK installed: `pip install google-adk`
+- A service account with roles: `roles/spanner.databaseUser`, `roles/aiplatform.user`
+- `gcloud` CLI installed and authenticated
+
+### 1. Clone and configure
+
+```bash
+git clone <repo-url>
+cd t2s_eval_system
+```
+
+Copy the example env file:
+
+```bash
+# Linux / macOS
+cp .env.example .env
+
+# Windows (PowerShell)
+Copy-Item .env.example .env
+```
+
+Open `.env` and fill in every variable. The minimum set to get the backend running locally:
+
+```
+VERTEX_AI_PROJECT=your-gcp-project
+VERTEX_AI_LOCATION=us-central1
+
+SPANNER_SOURCE_PROJECT=your-gcp-project
+SPANNER_SOURCE_INSTANCE=your-instance
+SPANNER_SOURCE_DATABASE=source-db-name
+
+SPANNER_EVAL_PROJECT=your-gcp-project
+SPANNER_EVAL_INSTANCE=your-instance
+SPANNER_EVAL_DATABASE=eval-db-name
+
+JUDGE_MODEL=gemini-2.0-flash
+EMBEDDING_MODEL=text-embedding-004
+```
+
+For the service account credentials key (local dev only):
+
+```
+# Linux / macOS
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+
+# Windows — backslashes or forward slashes both work
+GOOGLE_APPLICATION_CREDENTIALS=C:/path/to/service-account-key.json
+```
+
+For the agent repo path used in leakage checks:
+
+```
+# Linux / macOS
+AGENT_REPO_PATH=/path/to/your/agent/repo
+
+# Windows
+AGENT_REPO_PATH=C:/path/to/your/agent/repo
+```
+
+### 2. Apply the Spanner schema
+
+Run this once to create the eval database tables. Replace the variable placeholders with your actual values:
+
+```bash
+gcloud spanner databases ddl update YOUR_EVAL_DATABASE \
+  --instance=YOUR_EVAL_INSTANCE \
+  --ddl-file=schema.ddl
+```
+
+### 3. Start the backend
+
+**Linux / macOS:**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+flask --app src.main run --port 5000
+```
+
+**Windows (PowerShell):**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+flask --app src.main run --port 5000
+```
+
+> **Note:** `gunicorn` (the production WSGI server) is Linux-only and is skipped automatically on Windows. `waitress` is installed instead and used as the WSGI server when running under Docker-for-Windows or any Windows server context. For local development, `flask run` works on both platforms.
+
+The API is now available at `http://localhost:5000/api`.
+
+### 4. Start the frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The dashboard is now available at `http://localhost:5173`. All `/api/*` requests are proxied to the Flask server on port 5000.
+
+### 5. Seed the question bank
+
+With the app running, open the **Seeder** page in the dashboard:
+
+1. The strata table shows all discovered `(table × task × tone)` combinations with their current vs. target counts.
+2. Click **Dry Run** to preview what questions would be generated without writing anything.
+3. Click **Run Seeder** to generate and write the questions to Spanner.
+4. Newly seeded questions have `leakage_checked = false`. Return to the **Question Bank** page and click **Check All** to run leakage checks in batch.
+
+### 6. Run an evaluation
+
+Open the **Dashboard** page:
+
+1. Click **New Run** to create a run record.
+2. Click **Start** to begin evaluation. The UI polls for progress.
+3. Once complete, click into the run to see per-question results, outcomes, SQL, and judge reasoning.
+4. Review any flagged low-confidence passes in the **Review Queue** page.
+
+### 7. Run the unit tests
+
+No GCP credentials needed for unit tests:
+
+```bash
+pytest tests/unit/
+```
+
+For integration tests and the full smoke test, GCP credentials and a live Spanner database are required:
+
+```bash
+pytest tests/integration/
+python scripts/smoke_test.py
+```
 
 ---
 
@@ -110,7 +289,7 @@ Any `low_confidence_pass` result automatically creates a `ReviewItems` row. Revi
 
 **Two logical Spanner databases:**
 - **Source DB** — the production semantic layer and curriculum (read-only from eval's perspective). Contains table schemas and curriculum NLQs used for leakage detection and seeding.
-- **Eval DB** — questions, runs, results, review items, and metrics. Owned by this system.
+- **Eval DB** — questions, runs, results, review items, metrics, and LLM call logs. Owned by this system.
 
 ---
 
@@ -126,17 +305,18 @@ t2s_eval_system/
 │   │   └── models.py            # @dataclass for Question, Run, Result, ReviewItem, etc.
 │   ├── services/
 │   │   ├── adk_client.py        # Subprocess + HTTP wrapper for adk api_server
-│   │   ├── embedding.py         # Vertex AI embeddings + cosine similarity + corpus cache
-│   │   ├── judge.py             # Gemini judge (verdict/confidence) + seeder generation
+│   │   ├── embedding.py         # Vertex AI embeddings, cosine similarity, corpus cache
+│   │   ├── judge.py             # Gemini judge + HyDE generation + seeder generation
 │   │   ├── leakage.py           # Leakage guard: embedding + LLM checks
+│   │   ├── llm_logger.py        # Thread-local LLM call telemetry → LlmCallLogs
 │   │   ├── orchestrator.py      # Run lifecycle: startup/resume/parallel eval/metrics
-│   │   ├── seeder.py            # Strata discovery + NLQ generation
+│   │   ├── seeder.py            # Strata discovery + HyDE retrieval + NLQ generation
 │   │   ├── spanner_eval.py      # CRUD layer for eval DB (questions, runs, results)
 │   │   └── spanner_source.py    # Read-only access to source DB (schemas, curriculum)
 │   ├── api/
 │   │   ├── questions.py         # /api/questions — CRUD + CSV + leakage
 │   │   ├── runs.py              # /api/runs — lifecycle management
-│   │   ├── metrics.py           # /api/metrics — compare + breakdown + timeseries
+│   │   ├── metrics.py           # /api/metrics — compare, breakdown, timeseries, LLM usage
 │   │   ├── seeder.py            # /api/seed — strata, dry-run, execute
 │   │   └── review.py            # /api/review — human queue
 │   ├── utils/
@@ -152,7 +332,8 @@ t2s_eval_system/
 │   ├── src/
 │   │   ├── api/client.ts        # Typed fetch wrappers for all API routes
 │   │   ├── theme.ts             # Design tokens (colors, fonts, spacing)
-│   │   ├── pages/               # Dashboard, RunDetail, Compare, Questions, ReviewQueue, Seed
+│   │   ├── pages/               # Dashboard, RunDetail, Compare, Questions,
+│   │   │                        #   ReviewQueue, Seed, LlmUsage
 │   │   ├── components/          # layout/, ui/ (Card, DotRating, RunBar, StatusBadge, ...)
 │   │   └── hooks/               # useRuns, useQuestions, useMetrics, useReviewQueue
 │   └── package.json
@@ -192,6 +373,8 @@ Timestamps use `PENDING_COMMIT_TIMESTAMP()` (Spanner's server-side commit timest
 
 `ReviewItems` uses a `NULL_FILTERED INDEX` on `review_decision` so the pending queue query (`WHERE review_decision IS NULL`) hits an index rather than doing a full table scan.
 
+`LlmCallLogs` is not interleaved — LLM calls span multiple question evaluations and a single run, so there is no meaningful parent to interleave under. It has two indexes: one by `run_id` (for fetching all calls for a run) and one by `called_at DESC` (for time-ordered queries).
+
 See `schema.ddl` for the full DDL.
 
 ---
@@ -202,10 +385,10 @@ See `schema.ddl` for the full DDL.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | List questions (filter by `status`, `table_name`, `task`, `leakage_checked`) |
+| `GET` | `/` | List questions (filter by `status`, `table_name`, `task`, `tone`, `leakage_checked`) |
 | `POST` | `/` | Create a question |
 | `GET` | `/<id>` | Get question with leakage check details |
-| `PUT` | `/<id>` | Update `nlq`, `status`, `notes`, `table_name`, `task` |
+| `PUT` | `/<id>` | Update `nlq`, `status`, `notes`, `table_name`, `task`, `tone` |
 | `DELETE` | `/<id>` | Soft delete (sets `status = deleted`) |
 | `POST` | `/<id>/check-leakage` | Run leakage guard for one question |
 | `POST` | `/check-leakage-batch` | Run for all questions with `leakage_checked = false` |
@@ -230,14 +413,16 @@ See `schema.ddl` for the full DDL.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/compare?run_ids=1,2,3` | Side-by-side metrics for up to 10 runs |
-| `GET` | `/breakdown/<run_id>` | Breakdown by route, task, table, join count |
+| `GET` | `/breakdown/<run_id>` | Breakdown by route, task, table, tone, join count |
 | `GET` | `/timeseries` | `pct_passed` over time (trend line) |
+| `GET` | `/llm-calls/<run_id>` | All LLM call records for a run, ordered by `called_at` |
+| `GET` | `/llm-summary/<run_id>` | Aggregate token + latency stats, broken down by call type |
 
 ### Seeder — `/api/seed`
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/strata` | Current `(table, task)` strata with current vs. target counts |
+| `GET` | `/strata` | Current `(table × task × tone)` strata with current vs. target counts |
 | `POST` | `/dry-run` | Preview proposed questions without writing |
 | `POST` | `/run` | Execute seeding — writes new questions to Spanner |
 
@@ -271,46 +456,9 @@ Copy `.env.example` to `.env` and fill in values for local development. In Cloud
 | `JUDGE_CONFIDENCE_THRESHOLD` | Minimum confidence to classify as `passed` (default: `0.75`) |
 | `RUN_CONCURRENCY` | Parallel workers per eval run (default: `4`) |
 | `SEEDER_ACTIVE_COUNT` | Target questions per stratum for `active` status (default: `7`) |
+| `SEEDER_MONITORING_COUNT` | Target questions per stratum for `monitoring` status (default: `2`) |
 | `HEARTBEAT_INTERVAL_SECONDS` | How often the orchestrator updates `last_heartbeat` (default: `60`) |
 | `HEARTBEAT_STALE_MINUTES` | Age threshold for treating a run as interrupted (default: `5`) |
-
----
-
-## Local Development
-
-### Backend
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-cp .env.example .env
-# fill in .env
-
-flask --app src.main run --port 5000
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev        # proxies /api/* to Flask on :5000
-```
-
-### Tests
-
-```bash
-# Unit tests only (no GCP credentials needed)
-pytest tests/unit/
-
-# Integration tests (requires Spanner access)
-pytest tests/integration/
-
-# Full smoke test against real services
-python scripts/smoke_test.py
-```
 
 ---
 
@@ -365,6 +513,7 @@ gcloud scheduler jobs create http t2s-eval-nightly \
 | **Dashboard** | Headline pass rate, trend line, recent runs with stacked outcome bars |
 | **Run Detail** | Per-question results, filterable by outcome, expandable SQL + judge reasoning |
 | **Compare** | Side-by-side metrics for up to 10 runs with best-value highlighting |
-| **Question Bank** | Full CRUD, filter by status/leakage, CSV export/import |
+| **Question Bank** | Full CRUD, filter by status/tone/leakage, tone badges, CSV export/import |
 | **Review Queue** | Low-confidence passes awaiting human verdict |
-| **Seeder** | Strata view (current vs. target counts), dry-run preview, execute |
+| **Seeder** | Strata view (current vs. target counts by table/task/tone), dry-run preview, execute |
+| **LLM Usage** | Per-run token usage and latency charts; call type breakdown table |

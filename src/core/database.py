@@ -11,6 +11,7 @@ T_RUNS = "Runs"
 T_RESULTS = "Results"
 T_REVIEW_ITEMS = "ReviewItems"
 T_RUN_METRICS = "RunMetrics"
+T_LLM_CALL_LOGS = "LlmCallLogs"
 
 
 def get_source_db() -> spanner.database.Database:

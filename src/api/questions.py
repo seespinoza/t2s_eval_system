@@ -15,6 +15,7 @@ def list_questions():
         status=request.args.get("status"),
         table_name=request.args.get("table_name"),
         task=request.args.get("task"),
+        tone=request.args.get("tone"),
         leakage_checked=(lc.lower() == "true") if lc is not None else None,
         page=page,
         page_size=page_size,
@@ -31,6 +32,7 @@ def create_question():
         nlq=body["nlq"],
         table_name=body["table_name"],
         task=body["task"],
+        tone=body.get("tone", "neutral"),
         status=body.get("status", "active"),
         notes=body.get("notes"),
     )
@@ -52,7 +54,7 @@ def get_question(question_id):
 @bp.put("/<question_id>")
 def update_question(question_id):
     body = request.get_json(force=True)
-    allowed = {"nlq", "table_name", "task", "status", "notes"}
+    allowed = {"nlq", "table_name", "task", "tone", "status", "notes"}
     fields = {k: v for k, v in body.items() if k in allowed}
     q = spanner_eval.update_question(question_id, **fields)
     if not q:

@@ -8,6 +8,7 @@ const navItems = [
   { to: "/questions", label: "Questions", accent: colors.questions },
   { to: "/review", label: "Review Queue", accent: colors.review },
   { to: "/seed", label: "Seeder", accent: colors.seed },
+  { to: "/llm-usage", label: "LLM Usage", accent: colors.metrics },
 ];
 
 export default function Sidebar() {

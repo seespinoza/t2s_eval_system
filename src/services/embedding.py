@@ -41,6 +41,25 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return float(np.dot(va, vb) / (na * nb))
 
 
+def top_k_similar(
+    query_embedding: list[float],
+    corpus_embeddings: list[list[float]],
+    k: int = 5,
+) -> list[tuple[int, float]]:
+    """Return up to k (index, score) pairs sorted by descending cosine similarity."""
+    if not corpus_embeddings:
+        return []
+    qv = np.array(query_embedding, dtype=np.float32)
+    cm = np.array(corpus_embeddings, dtype=np.float32)
+    qnorm = np.linalg.norm(qv)
+    if qnorm == 0:
+        return []
+    sims = cm @ qv / (np.linalg.norm(cm, axis=1) * qnorm + 1e-9)
+    k = min(k, len(corpus_embeddings))
+    top_indices = np.argsort(sims)[-k:][::-1]
+    return [(int(i), float(sims[i])) for i in top_indices]
+
+
 def find_max_similarity(
     query_embedding: list[float],
     corpus_embeddings: list[list[float]],

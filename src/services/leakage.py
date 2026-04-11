@@ -1,5 +1,4 @@
 """Orchestrates both data leakage checks for a question."""
-import glob
 import re
 from pathlib import Path
 from src.config.settings import get_config
@@ -15,9 +14,9 @@ _STRING_LITERAL_PATTERN = re.compile(r'["\']([^"\']{10,300}[?])["\']')
 
 def _extract_prompt_examples(agent_repo_path: str) -> list[str]:
     examples: set[str] = set()
-    for filepath in glob.glob(f"{agent_repo_path}/**/*.py", recursive=True):
+    for filepath in Path(agent_repo_path).glob("**/*.py"):
         try:
-            content = Path(filepath).read_text(encoding="utf-8", errors="ignore")
+            content = filepath.read_text(encoding="utf-8", errors="ignore")
             for match in _EXAMPLE_VAR_PATTERN.finditer(content):
                 for s in _STRING_LITERAL_PATTERN.finditer(match.group(1)):
                     examples.add(s.group(1).strip())
