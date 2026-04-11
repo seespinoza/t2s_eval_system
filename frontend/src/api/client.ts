@@ -71,10 +71,22 @@ export const questionsApi = {
 
 export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
+export interface QuestionSet {
+  id: string;
+  name: string;
+  version: string | null;
+  description: string | null;
+  question_count: number;
+  created_at: string;
+}
+
 export interface Run {
   id: string;
   name: string | null;
   status: RunStatus;
+  agent_version: string | null;
+  description: string | null;
+  question_set_id: string | null;
   started_at: string | null;
   completed_at: string | null;
   last_heartbeat: string | null;
@@ -102,6 +114,15 @@ export interface Result {
   error_message: string | null;
   completed_at: string | null;
 }
+
+export const questionSetsApi = {
+  list: (limit = 50) => req<QuestionSet[]>(`/question-sets?limit=${limit}`),
+  get: (id: string) => req<QuestionSet>(`/question-sets/${id}`),
+  create: (body: { name: string; version?: string; description?: string; filter?: object }) =>
+    req<QuestionSet>("/question-sets", { method: "POST", body: JSON.stringify(body) }),
+  delete: (id: string) =>
+    req<{ deleted: string }>(`/question-sets/${id}`, { method: "DELETE" }),
+};
 
 export const runsApi = {
   list: (limit = 20) => req<Run[]>(`/runs?limit=${limit}`),
@@ -152,9 +173,53 @@ export interface TimeseriesPoint {
   total: number;
 }
 
+export interface StratumMetrics {
+  run_id: string;
+  run_name: string | null;
+  total: number;
+  count_passed: number;
+  count_failed: number;
+  count_rule_violation: number;
+  count_low_conf_pass: number;
+  pct_passed: number;
+  pct_failed: number;
+  pct_rule_violation: number;
+  avg_runtime_ms: number | null;
+}
+
+export interface QuestionCompareResult {
+  result_id: string;
+  outcome: string;
+  sql_generated: string | null;
+  judge_verdict: string | null;
+  judge_confidence: number | null;
+  judge_reasoning: string | null;
+  runtime_ms: number | null;
+  route: string | null;
+  error_message: string | null;
+}
+
+export interface QuestionCompareRow {
+  question_id: string;
+  nlq: string;
+  tone: string | null;
+  results: Record<string, QuestionCompareResult>; // keyed by run_id
+}
+
 export const metricsApi = {
   compare: (runIds: string[]) =>
     req<RunMetrics[]>(`/metrics/compare?run_ids=${runIds.join(",")}`),
+  compareStratum: (runIds: string[], filters: { table?: string; task?: string; tone?: string }) => {
+    const p = new URLSearchParams({ run_ids: runIds.join(",") });
+    if (filters.table) p.set("table", filters.table);
+    if (filters.task) p.set("task", filters.task);
+    if (filters.tone) p.set("tone", filters.tone);
+    return req<StratumMetrics[]>(`/metrics/compare-stratum?${p}`);
+  },
+  compareQuestions: (runIds: string[], q: string) =>
+    req<QuestionCompareRow[]>(
+      `/metrics/compare-questions?run_ids=${runIds.join(",")}&q=${encodeURIComponent(q)}`
+    ),
   breakdown: (runId: string) =>
     req<Record<string, unknown>>(`/metrics/breakdown/${runId}`),
   timeseries: (limit = 50) =>

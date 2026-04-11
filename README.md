@@ -4,6 +4,90 @@ An automated evaluation framework for a multi-agent text-to-SQL pipeline. The sy
 
 ---
 
+## Demo Mode (No GCP Required)
+
+The repo ships with a standalone demo server that serves realistic fake data for every API endpoint. Use it to explore the full dashboard UX without a GCP project, Spanner database, or Vertex AI credentials.
+
+### What the demo includes
+
+| Pre-loaded data | Details |
+|---|---|
+| **Question bank** | 32 questions across 5 tables × 4 tasks × 3 tones, with leakage check results |
+| **Completed runs** | 8 runs spanning 3 weeks with varying pass rates (60 %–92 %), including a resumed run |
+| **Results** | Full per-question results with SQL, judge verdicts, confidence scores, and reasoning |
+| **Review queue** | 12 low-confidence-pass items, 4 already reviewed |
+| **LLM call logs** | ~400 logged calls per run with realistic token counts and latencies |
+| **Strata** | 36 `(table × task × tone)` strata with current vs. target counts |
+| **Interactive mutations** | Create/edit/delete questions, start a run and watch it progress, submit reviews |
+
+### Running the demo
+
+**1. Install dependencies** (only Flask and flask-cors needed — no GCP packages required):
+
+```bash
+python -m venv .venv
+
+# Linux / macOS
+source .venv/bin/activate
+
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+
+pip install flask flask-cors
+```
+
+**2. Start the demo API server:**
+
+```bash
+python demo/server.py
+```
+
+You should see:
+
+```
+  T2S Eval — Demo Mode
+  ───────────────────────────────────────────────────────
+  Fake data pre-loaded. No GCP credentials required.
+  All state is in-memory and resets on restart.
+
+  Demo API:  http://localhost:5000/api/health
+
+  To view the dashboard:
+    cd frontend && npm run dev
+    Open http://localhost:3000
+  ───────────────────────────────────────────────────────
+```
+
+**3. Start the frontend** (in a separate terminal):
+
+```bash
+cd frontend
+npm install     # first time only
+npm run dev
+```
+
+Open **http://localhost:3000** in your browser.
+
+### What you can do in demo mode
+
+- **Dashboard** — see the pass-rate trend line, headline stats, and recent run bars
+- **Run Detail** — drill into any completed run, filter results by outcome, expand SQL and judge reasoning
+- **Compare** — select multiple runs and compare metrics side-by-side
+- **Question Bank** — edit questions inline, filter by tone/table/task, run a leakage check, export CSV
+- **Seeder** — run a dry run to preview generated questions, then execute seeding and watch the strata fill up
+- **Review Queue** — submit confirmed-pass or override-fail decisions
+- **LLM Usage** — view token usage and latency charts for any completed run
+- **Start a run** — click **Start** on "Demo run (start me!)" and watch it make progress in real time (simulates ~10 s per question)
+
+### Demo limitations
+
+- All writes are in-memory only — nothing is persisted to disk. Restarting `demo/server.py` resets everything to the initial pre-loaded state.
+- The "running" run simulation completes in about 8 minutes (50 questions × ~10 s each). You can cancel it at any time.
+- CSV import is a no-op in demo mode (returns success without writing).
+- The seeder generates placeholder question text rather than real Gemini-generated NLQs.
+
+---
+
 ## How Evaluation Works
 
 ### The Pipeline Under Test
@@ -260,6 +344,203 @@ python scripts/smoke_test.py
 
 ---
 
+## Running Evaluations via CLI
+
+The dashboard is useful for reviewing results, but the primary way to trigger evaluation batches is the command line — both locally and when scheduled as a Cloud Run Job.
+
+There are two entry points:
+
+| Script | Purpose |
+|---|---|
+| `runner/main.py` | Execute a run end-to-end (Cloud Run Job entrypoint) |
+| `scripts/cli.py` | Admin operations: list runs, create runs, seed, leakage-check |
+
+Both require the virtual environment activated and `.env` populated with Spanner + Vertex AI credentials.
+
+---
+
+### `runner/main.py` — run executor
+
+This is the script Cloud Run executes. It runs one evaluation to completion and exits.
+
+#### Default behavior (no flags)
+
+```bash
+python runner/main.py
+```
+
+1. Checks for any run with `status = running` and a stale heartbeat → resumes it
+2. Otherwise picks up the oldest `status = pending` run and executes it
+3. Exits 0 if nothing to do
+
+This is what Cloud Scheduler triggers on a schedule. You create runs in advance (via the dashboard or `scripts/cli.py runs create`) and the scheduled job picks them up.
+
+#### Start a specific run by ID
+
+```bash
+python runner/main.py --run-id <run-id>
+```
+
+Useful when you created a run via the dashboard or CLI and want to execute it immediately. The run must be in `pending` or `running` (interrupted) state.
+
+#### Create and execute a new run in one step
+
+```bash
+# Run all active questions
+python runner/main.py --name "nightly-$(date +%F)"
+
+# Filter to a specific table
+python runner/main.py --name "orders-only" --table orders
+
+# Filter to a specific tone
+python runner/main.py --name "formal-batch" --tone formal
+
+# Combine filters
+python runner/main.py --name "orders-formal" --table orders --tone formal --task aggregate_sum
+
+# Force create even if a pending run already exists
+python runner/main.py --name "urgent" --force-create
+```
+
+All filter flags (`--table`, `--task`, `--tone`, `--status`) are stored in the run record and applied when selecting questions to evaluate. The default question status filter is `active`; pass `--status all` to include monitoring questions.
+
+#### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Run completed successfully, or nothing to do |
+| `1` | Run failed, invalid `--run-id`, or unrecoverable error |
+
+---
+
+### `scripts/cli.py` — admin CLI
+
+Use this for inspection and setup tasks that don't require the dashboard.
+
+#### List runs
+
+```bash
+# All runs (most recent first)
+python scripts/cli.py runs list
+
+# Filter by status
+python scripts/cli.py runs list --status pending
+python scripts/cli.py runs list --status running
+python scripts/cli.py runs list --status completed --limit 10
+```
+
+#### Create a pending run
+
+Creates a run record in Spanner but does **not** execute it. Use `runner/main.py` or `runs start` to execute.
+
+```bash
+python scripts/cli.py runs create --name "weekly-full"
+python scripts/cli.py runs create --name "orders-only" --table orders
+python scripts/cli.py runs create --name "casual-tone" --tone casual
+python scripts/cli.py runs create --name "filtered" --table products --task filter_by_date --tone formal
+```
+
+Prints the run ID. Pass that ID to `runs start` or `runner/main.py --run-id`.
+
+#### Start an existing pending run
+
+Executes the run synchronously and blocks until it completes.
+
+```bash
+python scripts/cli.py runs start <run-id>
+```
+
+#### Check run status and results
+
+```bash
+python scripts/cli.py runs status <run-id>
+```
+
+For a completed run, prints pass/fail/violation counts and average runtime. For a running run, prints current progress.
+
+#### Seed the question bank
+
+```bash
+# Preview what would be generated (no writes)
+python scripts/cli.py seed --dry-run
+
+# Write new questions to Spanner
+python scripts/cli.py seed
+```
+
+Generates questions for every `(table × task × tone)` stratum that is below its target count. Uses HyDE to retrieve relevant curriculum examples before calling Gemini. Reports a per-stratum breakdown.
+
+#### Run leakage checks
+
+```bash
+python scripts/cli.py leakage-check
+```
+
+Runs both embedding-similarity and LLM checks on every question with `leakage_checked = false`. Prints which questions were flagged and why. Flagged questions remain in the bank for manual review — they are not automatically deleted.
+
+---
+
+### Typical batch workflow
+
+```bash
+# 1. Seed questions for any gaps
+python scripts/cli.py seed
+
+# 2. Check leakage on newly seeded questions
+python scripts/cli.py leakage-check
+
+# 3. Confirm questions are ready
+python scripts/cli.py runs list --status pending
+
+# 4. Create a run (or use the dashboard)
+python scripts/cli.py runs create --name "$(date +%F)-nightly"
+
+# 5. Execute it
+python runner/main.py   # picks up the pending run automatically
+# or explicitly:
+python runner/main.py --run-id <run-id>
+
+# 6. Check results
+python scripts/cli.py runs status <run-id>
+# Then open the dashboard to review low-confidence passes in the Review Queue
+```
+
+---
+
+### Cloud Run scheduling
+
+The `runner/main.py` script is designed to run as a **Cloud Run Job** triggered by Cloud Scheduler. The job creates-and-executes or picks-up-and-resumes a run, then exits.
+
+```bash
+# Deploy the runner image
+gcloud run jobs create t2s-eval-runner \
+  --image gcr.io/$PROJECT/t2s-eval-runner \
+  --region us-central1 \
+  --set-env-vars SPANNER_EVAL_PROJECT=$PROJECT,...
+
+# One-off execution with a specific run name
+gcloud run jobs update t2s-eval-runner \
+  --args="--name,nightly-$(date +%F)"
+
+gcloud run jobs execute t2s-eval-runner --wait
+
+# Scheduled nightly at 2 AM
+# --force-create ensures a new run is always created even if no pending run is queued.
+# Without it, the job silently exits 0 when there's nothing pending — Cloud Scheduler
+# treats that as success, so you'd never notice it did nothing.
+gcloud run jobs update t2s-eval-runner \
+  --args="--name,nightly-scheduled,--force-create"
+
+gcloud scheduler jobs create http t2s-eval-nightly \
+  --schedule "0 2 * * *" \
+  --uri "https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT/jobs/t2s-eval-runner:run" \
+  --oauth-service-account-email $SA_EMAIL
+```
+
+When using the scheduled approach, create runs in advance via the dashboard or `scripts/cli.py runs create`. The nightly job picks them up in order.
+
+---
+
 ## Architecture
 
 ```
@@ -466,10 +747,44 @@ Copy `.env.example` to `.env` and fill in values for local development. In Cloud
 
 ### Apply Spanner Schema
 
+For a **new database**, apply the full schema:
+
 ```bash
 gcloud spanner databases ddl update $SPANNER_EVAL_DATABASE \
   --instance=$SPANNER_EVAL_INSTANCE \
   --ddl-file=schema.ddl
+```
+
+For an **existing database**, apply only the additive changes (safe to run on a live database):
+
+```bash
+gcloud spanner databases ddl update $SPANNER_EVAL_DATABASE \
+  --instance=$SPANNER_EVAL_INSTANCE \
+  --ddl="CREATE TABLE QuestionSets (
+    id STRING(36) NOT NULL,
+    name STRING(256) NOT NULL,
+    version STRING(64),
+    description STRING(MAX),
+    question_ids_json JSON NOT NULL,
+    question_count INT64 NOT NULL,
+    created_at TIMESTAMP NOT NULL OPTIONS (allow_commit_timestamp=true)
+  ) PRIMARY KEY (id)"
+
+gcloud spanner databases ddl update $SPANNER_EVAL_DATABASE \
+  --instance=$SPANNER_EVAL_INSTANCE \
+  --ddl="CREATE INDEX QuestionSetsByName ON QuestionSets(name)"
+
+gcloud spanner databases ddl update $SPANNER_EVAL_DATABASE \
+  --instance=$SPANNER_EVAL_INSTANCE \
+  --ddl="ALTER TABLE Runs ADD COLUMN agent_version STRING(256)"
+
+gcloud spanner databases ddl update $SPANNER_EVAL_DATABASE \
+  --instance=$SPANNER_EVAL_INSTANCE \
+  --ddl="ALTER TABLE Runs ADD COLUMN description STRING(MAX)"
+
+gcloud spanner databases ddl update $SPANNER_EVAL_DATABASE \
+  --instance=$SPANNER_EVAL_INSTANCE \
+  --ddl="ALTER TABLE Runs ADD COLUMN question_set_id STRING(36)"
 ```
 
 ### Build and Push Images

@@ -26,6 +26,12 @@ class Config:
     adk_agent_module: str = field(default_factory=lambda: os.getenv("ADK_AGENT_MODULE", ""))
     adk_host: str = field(default_factory=lambda: os.getenv("ADK_HOST", "localhost"))
     adk_port: int = field(default_factory=lambda: int(os.getenv("ADK_PORT", "8080")))
+    # ADK response field mapping — set these once you know your agent's response shape.
+    # Each value is a comma-separated list of field names tried in order (first non-empty wins).
+    adk_field_sql: str = field(default_factory=lambda: os.getenv("ADK_FIELD_SQL", "sql_generated,sql,query"))
+    adk_field_route: str = field(default_factory=lambda: os.getenv("ADK_FIELD_ROUTE", "route"))
+    adk_field_response: str = field(default_factory=lambda: os.getenv("ADK_FIELD_RESPONSE", "response,output,text"))
+    adk_run_path: str = field(default_factory=lambda: os.getenv("ADK_RUN_PATH", "/run"))
     agent_repo_path: str = field(default_factory=lambda: os.getenv("AGENT_REPO_PATH", ""))
 
     # Models

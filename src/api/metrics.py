@@ -38,6 +38,138 @@ def get_breakdown(run_id):
     return jsonify(metrics.metrics_json or {})
 
 
+@bp.get("/compare-stratum")
+def compare_stratum():
+    """Filtered metrics for a set of runs scoped to a specific stratum combination.
+
+    Query params:
+      run_ids  — comma-separated run IDs (required)
+      table    — filter by table_name (optional)
+      task     — filter by task (optional)
+      tone     — filter by tone_snapshot (optional)
+    """
+    raw = request.args.get("run_ids", "")
+    run_ids = [r.strip() for r in raw.split(",") if r.strip()]
+    if not run_ids:
+        return jsonify({"error": "run_ids required"}), 400
+
+    table = request.args.get("table") or None
+    task = request.args.get("task") or None
+    tone = request.args.get("tone") or None
+
+    from src.core.database import T_RESULTS, T_QUESTIONS
+    placeholders = ", ".join(f"@id{i}" for i in range(len(run_ids)))
+    params = {f"id{i}": v for i, v in enumerate(run_ids)}
+    pt = {f"id{i}": param_types.STRING for i in range(len(run_ids))}
+
+    conditions = [f"res.run_id IN ({placeholders})"]
+    if table:
+        conditions.append("q.table_name = @table")
+        params["table"] = table
+        pt["table"] = param_types.STRING
+    if task:
+        conditions.append("q.task = @task")
+        params["task"] = task
+        pt["task"] = param_types.STRING
+    if tone:
+        conditions.append("res.tone_snapshot = @tone")
+        params["tone"] = tone
+        pt["tone"] = param_types.STRING
+
+    where = " AND ".join(conditions)
+    sql = (
+        f"SELECT res.run_id, res.outcome, COUNT(*) as cnt, AVG(res.runtime_ms) as avg_rt "
+        f"FROM {T_RESULTS} res JOIN {T_QUESTIONS} q ON res.question_id = q.id "
+        f"WHERE {where} GROUP BY res.run_id, res.outcome"
+    )
+
+    rows: dict[str, dict] = {}
+    with get_eval_db().snapshot() as snapshot:
+        for row in snapshot.execute_sql(sql, params=params, param_types=pt):
+            run_id, outcome, cnt, avg_rt = row
+            if run_id not in rows:
+                rows[run_id] = {"run_id": run_id, "total": 0, "count_passed": 0,
+                                "count_failed": 0, "count_rule_violation": 0,
+                                "count_low_conf_pass": 0, "avg_runtime_ms": None, "_rt_sum": 0, "_rt_n": 0}
+            rows[run_id]["total"] += cnt
+            rows[run_id][f"count_{outcome}"] = rows[run_id].get(f"count_{outcome}", 0) + cnt
+            if avg_rt:
+                rows[run_id]["_rt_sum"] += avg_rt * cnt
+                rows[run_id]["_rt_n"] += cnt
+
+    runs = {r.id: r for r in spanner_eval.list_runs(limit=200) if r.id in run_ids}
+    result = []
+    for run_id in run_ids:
+        d = rows.get(run_id, {"run_id": run_id, "total": 0, "count_passed": 0,
+                               "count_failed": 0, "count_rule_violation": 0, "count_low_conf_pass": 0})
+        total = d["total"]
+        d["pct_passed"] = round(d["count_passed"] / total * 100, 2) if total else 0
+        d["pct_failed"] = round(d["count_failed"] / total * 100, 2) if total else 0
+        d["pct_rule_violation"] = round(d.get("count_rule_violation", 0) / total * 100, 2) if total else 0
+        rt_n = d.pop("_rt_n", 0)
+        rt_sum = d.pop("_rt_sum", 0)
+        d["avg_runtime_ms"] = round(rt_sum / rt_n, 2) if rt_n else None
+        run = runs.get(run_id)
+        d["run_name"] = run.name if run else None
+        result.append(d)
+    return jsonify(result)
+
+
+@bp.get("/compare-questions")
+def compare_questions():
+    """Search for questions across selected runs and return per-run results.
+
+    Query params:
+      run_ids — comma-separated run IDs (required)
+      q       — search string: substring match on nlq_snapshot, or question_id prefix (required)
+    """
+    raw = request.args.get("run_ids", "")
+    run_ids = [r.strip() for r in raw.split(",") if r.strip()]
+    q = (request.args.get("q") or "").strip()
+    if not run_ids or not q:
+        return jsonify({"error": "run_ids and q are required"}), 400
+
+    from src.core.database import T_RESULTS
+    placeholders = ", ".join(f"@id{i}" for i in range(len(run_ids)))
+    params = {f"id{i}": v for i, v in enumerate(run_ids)}
+    pt = {f"id{i}": param_types.STRING for i in range(len(run_ids))}
+
+    # UUID-prefix search vs NLQ text search
+    import re
+    is_id_search = bool(re.match(r'^[0-9a-f\-]{4,}$', q, re.IGNORECASE))
+    if is_id_search:
+        conditions = f"res.run_id IN ({placeholders}) AND STARTS_WITH(res.question_id, @q)"
+    else:
+        conditions = f"res.run_id IN ({placeholders}) AND LOWER(res.nlq_snapshot) LIKE @q"
+        q = f"%{q.lower()}%"
+
+    params["q"] = q
+    pt["q"] = param_types.STRING
+
+    cols = ("res.run_id, res.id, res.question_id, res.nlq_snapshot, res.tone_snapshot, "
+            "res.outcome, res.sql_generated, res.judge_verdict, res.judge_confidence, "
+            "res.judge_reasoning, res.runtime_ms, res.route, res.error_message")
+    sql = (f"SELECT {cols} FROM {T_RESULTS} res "
+           f"WHERE {conditions} ORDER BY res.question_id, res.run_id LIMIT 300")
+
+    by_question: dict[str, dict] = {}
+    with get_eval_db().snapshot() as snapshot:
+        for row in snapshot.execute_sql(sql, params=params, param_types=pt):
+            (run_id, res_id, question_id, nlq, tone, outcome, sql_gen,
+             verdict, confidence, reasoning, runtime_ms, route, error) = row
+            if question_id not in by_question:
+                by_question[question_id] = {"question_id": question_id, "nlq": nlq,
+                                            "tone": tone, "results": {}}
+            by_question[question_id]["results"][run_id] = {
+                "result_id": res_id, "outcome": outcome,
+                "sql_generated": sql_gen, "judge_verdict": verdict,
+                "judge_confidence": confidence, "judge_reasoning": reasoning,
+                "runtime_ms": runtime_ms, "route": route, "error_message": error,
+            }
+
+    return jsonify(list(by_question.values()))
+
+
 @bp.get("/timeseries")
 def timeseries():
     limit = int(request.args.get("limit", 50))

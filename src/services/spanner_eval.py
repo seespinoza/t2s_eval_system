@@ -5,9 +5,9 @@ from google.cloud.spanner_v1 import param_types, KeySet
 from google.cloud.spanner_v1.data_types import JsonObject
 from src.core.database import (
     get_eval_db, T_QUESTIONS, T_LEAKAGE_CHECKS,
-    T_RUNS, T_RESULTS, T_REVIEW_ITEMS, T_RUN_METRICS,
+    T_QUESTION_SETS, T_RUNS, T_RESULTS, T_REVIEW_ITEMS, T_RUN_METRICS,
 )
-from src.core.models import Question, LeakageCheck, Run, Result, ReviewItem, RunMetrics
+from src.core.models import Question, LeakageCheck, QuestionSet, Run, Result, ReviewItem, RunMetrics
 
 COMMIT_TS = "spanner.commit_timestamp()"
 
@@ -196,16 +196,76 @@ def get_leakage_check(question_id: str, check_id: str) -> LeakageCheck | None:
 
 # ─── Runs ─────────────────────────────────────────────────────────────────────
 
-def create_run(name: str | None, config: dict, question_filter: dict) -> Run:
+# ─── Question Sets ────────────────────────────────────────────────────────────
+
+def create_question_set(
+    name: str,
+    question_ids: list[str],
+    version: str | None = None,
+    description: str | None = None,
+) -> QuestionSet:
+    qs_id = str(uuid.uuid4())
+
+    def _tx(transaction):
+        transaction.insert(
+            T_QUESTION_SETS,
+            columns=["id", "name", "version", "description",
+                     "question_ids_json", "question_count", "created_at"],
+            values=[[qs_id, name, version, description,
+                     JsonObject(question_ids), len(question_ids), COMMIT_TS]],
+        )
+
+    get_eval_db().run_in_transaction(_tx)
+    return get_question_set(qs_id)
+
+
+def get_question_set(qs_id: str) -> QuestionSet | None:
+    with get_eval_db().snapshot() as snapshot:
+        for row in snapshot.read(
+            T_QUESTION_SETS, columns=QuestionSet.COLUMNS, keyset=_keyset([qs_id])
+        ):
+            return QuestionSet.from_row(row)
+    return None
+
+
+def list_question_sets(limit: int = 50) -> list[QuestionSet]:
+    results: list[QuestionSet] = []
+    with get_eval_db().snapshot() as snapshot:
+        for row in snapshot.execute_sql(
+            f"SELECT {', '.join(QuestionSet.COLUMNS)} FROM {T_QUESTION_SETS} "
+            f"ORDER BY created_at DESC LIMIT {limit}"
+        ):
+            results.append(QuestionSet.from_row(row))
+    return results
+
+
+def delete_question_set(qs_id: str) -> None:
+    def _tx(transaction):
+        transaction.delete(T_QUESTION_SETS, keyset=_keyset([qs_id]))
+    get_eval_db().run_in_transaction(_tx)
+
+
+# ─── Runs ─────────────────────────────────────────────────────────────────────
+
+def create_run(
+    name: str | None,
+    config: dict,
+    question_filter: dict,
+    agent_version: str | None = None,
+    description: str | None = None,
+    question_set_id: str | None = None,
+) -> Run:
     run_id = str(uuid.uuid4())
 
     def _tx(transaction):
         transaction.insert(
             T_RUNS,
-            columns=["id", "name", "status", "config_json",
+            columns=["id", "name", "status", "agent_version", "description",
+                     "question_set_id", "config_json",
                      "question_filter_json", "resume_count", "created_at"],
-            values=[[run_id, name, "pending",
-                     JsonObject(config), JsonObject(question_filter), 0, COMMIT_TS]],
+            values=[[run_id, name, "pending", agent_version, description,
+                     question_set_id, JsonObject(config),
+                     JsonObject(question_filter), 0, COMMIT_TS]],
         )
 
     get_eval_db().run_in_transaction(_tx)

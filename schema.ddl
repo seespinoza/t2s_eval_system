@@ -33,10 +33,29 @@ CREATE TABLE LeakageChecks (
 ) PRIMARY KEY (question_id, id),
   INTERLEAVE IN PARENT Questions ON DELETE CASCADE;
 
+-- Named, versioned snapshots of a question list.
+-- Create one before a batch run to give it a stable identity you can reference
+-- across multiple agent versions.
+CREATE TABLE QuestionSets (
+    id               STRING(36)   NOT NULL,
+    name             STRING(256)  NOT NULL,
+    version          STRING(64),              -- e.g. 'v1', '2024-01-15', 'post-schema-update'
+    description      STRING(MAX),             -- free-text notes about this question set
+    question_ids_json JSON        NOT NULL,   -- snapshot of question UUIDs at creation time
+    question_count   INT64        NOT NULL,
+    created_at       TIMESTAMP    NOT NULL OPTIONS (allow_commit_timestamp=true),
+) PRIMARY KEY (id);
+
+CREATE INDEX QuestionSetsByName      ON QuestionSets(name);
+CREATE INDEX QuestionSetsByCreatedAt ON QuestionSets(created_at DESC);
+
 CREATE TABLE Runs (
     id                   STRING(36)  NOT NULL,
     name                 STRING(256),
     status               STRING(32)  NOT NULL,
+    agent_version        STRING(256),             -- e.g. 'v1.2.3', git SHA, image tag
+    description          STRING(MAX),             -- free-text notes about this run
+    question_set_id      STRING(36),              -- optional reference to a QuestionSet
     started_at           TIMESTAMP,
     completed_at         TIMESTAMP,
     last_heartbeat       TIMESTAMP,

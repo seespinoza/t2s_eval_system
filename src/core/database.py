@@ -7,6 +7,7 @@ _eval_db: spanner.database.Database | None = None
 # Table name constants
 T_QUESTIONS = "Questions"
 T_LEAKAGE_CHECKS = "LeakageChecks"
+T_QUESTION_SETS = "QuestionSets"
 T_RUNS = "Runs"
 T_RESULTS = "Results"
 T_REVIEW_ITEMS = "ReviewItems"

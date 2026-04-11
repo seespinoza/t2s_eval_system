@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Shell from "./components/layout/Shell";
 import Dashboard from "./pages/Dashboard";
+import Runs from "./pages/Runs";
 import RunDetail from "./pages/RunDetail";
 import Compare from "./pages/Compare";
 import Questions from "./pages/Questions";
@@ -14,6 +15,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Shell />}>
           <Route index element={<Dashboard />} />
+          <Route path="runs" element={<Runs />} />
           <Route path="runs/:id" element={<RunDetail />} />
           <Route path="compare" element={<Compare />} />
           <Route path="questions" element={<Questions />} />

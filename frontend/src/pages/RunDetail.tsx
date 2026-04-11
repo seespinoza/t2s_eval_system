@@ -34,8 +34,14 @@ export default function RunDetail() {
       <h1 style={{ fontFamily: fonts.heading, fontSize: 28, marginBottom: spacing.md }}>
         {run.name || run.id.slice(0, 8)}
       </h1>
-      <div style={{ display: "flex", gap: spacing.sm, marginBottom: spacing.xl, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: spacing.sm, marginBottom: spacing.xl, alignItems: "center", flexWrap: "wrap" }}>
         <StatusBadge status={run.status} />
+        {run.agent_version && (
+          <span style={{ fontSize: 11, fontFamily: fonts.mono, color: colors.seed,
+            background: `${colors.seed}15`, padding: "2px 8px", borderRadius: 4 }}>
+            {run.agent_version}
+          </span>
+        )}
         {run.resume_count > 0 && (
           <span style={{ fontSize: 12, color: colors.seed }}>Resumed ×{run.resume_count}</span>
         )}
@@ -45,6 +51,19 @@ export default function RunDetail() {
           </span>
         )}
       </div>
+      {run.description && (
+        <p style={{ fontSize: 13, color: colors.textMuted, fontStyle: "italic",
+          marginBottom: spacing.xl, marginTop: `-${spacing.md}` }}>
+          {run.description}
+        </p>
+      )}
+      {run.question_set_id && (
+        <p style={{ fontSize: 12, color: colors.textMuted, marginBottom: spacing.xl,
+          marginTop: run.description ? `-${spacing.md}` : `-${spacing.md}` }}>
+          <span style={{ fontFamily: fonts.mono }}>QUESTION SET</span>{" "}
+          <span style={{ color: colors.text }}>{run.question_set_id}</span>
+        </p>
+      )}
 
       {/* Metrics panel */}
       {metrics && (

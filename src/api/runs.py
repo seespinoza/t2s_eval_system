@@ -19,6 +19,9 @@ def create_run():
         name=body.get("name"),
         config=body.get("config", {}),
         question_filter=body.get("question_filter", {"statuses": ["active", "monitoring"]}),
+        agent_version=body.get("agent_version"),
+        description=body.get("description"),
+        question_set_id=body.get("question_set_id"),
     )
     return jsonify(run.to_dict()), 201
 

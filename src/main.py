@@ -1,7 +1,7 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
 from src.config.settings import get_config
-from src.api import questions, runs, metrics, seeder, review
+from src.api import questions, runs, metrics, seeder, review, question_sets
 
 
 def create_app() -> Flask:
@@ -13,6 +13,7 @@ def create_app() -> Flask:
     app.register_blueprint(metrics.bp)
     app.register_blueprint(seeder.bp)
     app.register_blueprint(review.bp)
+    app.register_blueprint(question_sets.bp)
 
     @app.get("/api/health")
     def health():

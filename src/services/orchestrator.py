@@ -171,15 +171,40 @@ def start_run(run_id: str) -> None:
 
         else:
             # Fresh start: load eligible questions
-            filter_cfg = run.question_filter_json or {}
-            statuses = filter_cfg.get("statuses", ["active", "monitoring"])
+            # If the run references a QuestionSet, use its snapshotted IDs directly.
+            if run.question_set_id:
+                qs = spanner_eval.get_question_set(run.question_set_id)
+                if qs is None:
+                    spanner_eval.update_run(run_id, status="failed")
+                    log.error("Run %s references missing QuestionSet %s", run_id, run.question_set_id)
+                    return
+                raw_ids: list[str] = qs.question_ids_json
+                all_questions = [q for qid in raw_ids
+                                 if (q := spanner_eval.get_question(qid)) is not None]
+                log.info("Run %s using QuestionSet '%s' (%s) — %d questions",
+                         run_id, qs.name, qs.version or "no version", len(all_questions))
+            else:
+                filter_cfg = run.question_filter_json or {}
 
-            all_questions: list[Question] = []
-            for status in statuses:
-                all_questions.extend(spanner_eval.list_questions(
-                    status=status, leakage_checked=True,
-                    page=1, page_size=10000,
-                ))
+                # Support both "status" (singular, from CLI) and "statuses" (list, legacy)
+                if "statuses" in filter_cfg:
+                    statuses = filter_cfg["statuses"]
+                elif "status" in filter_cfg:
+                    statuses = [filter_cfg["status"]]
+                else:
+                    statuses = ["active", "monitoring"]
+
+                table_name = filter_cfg.get("table_name") or None
+                task = filter_cfg.get("task") or None
+                tone = filter_cfg.get("tone") or None
+
+                all_questions = []
+                for status in statuses:
+                    all_questions.extend(spanner_eval.list_questions(
+                        status=status, leakage_checked=True,
+                        table_name=table_name, task=task, tone=tone,
+                        page=1, page_size=10000,
+                    ))
 
             if not all_questions:
                 spanner_eval.update_run(run_id, status="failed")

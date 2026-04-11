@@ -81,10 +81,43 @@ class LeakageCheck:
 
 
 @dataclass
+class QuestionSet:
+    id: str
+    name: str
+    version: str | None
+    description: str | None
+    question_ids_json: list
+    question_count: int
+    created_at: Any
+
+    COLUMNS = ["id", "name", "version", "description",
+               "question_ids_json", "question_count", "created_at"]
+
+    @classmethod
+    def from_row(cls, row) -> QuestionSet:
+        return cls(
+            id=row[0], name=row[1], version=row[2], description=row[3],
+            question_ids_json=row[4] or [], question_count=row[5] or 0,
+            created_at=row[6],
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "name": self.name, "version": self.version,
+            "description": self.description,
+            "question_count": self.question_count,
+            "created_at": _ts(self.created_at),
+        }
+
+
+@dataclass
 class Run:
     id: str
     name: str | None
     status: str
+    agent_version: str | None
+    description: str | None
+    question_set_id: str | None
     started_at: Any
     completed_at: Any
     last_heartbeat: Any
@@ -95,22 +128,27 @@ class Run:
     resume_count: int
     created_at: Any
 
-    COLUMNS = ["id", "name", "status", "started_at", "completed_at",
+    COLUMNS = ["id", "name", "status", "agent_version", "description",
+               "question_set_id", "started_at", "completed_at",
                "last_heartbeat", "question_ids_json", "config_json",
                "question_filter_json", "total_questions", "resume_count", "created_at"]
 
     @classmethod
     def from_row(cls, row) -> Run:
         return cls(
-            id=row[0], name=row[1], status=row[2], started_at=row[3],
-            completed_at=row[4], last_heartbeat=row[5], question_ids_json=row[6],
-            config_json=row[7], question_filter_json=row[8], total_questions=row[9],
-            resume_count=row[10] or 0, created_at=row[11],
+            id=row[0], name=row[1], status=row[2], agent_version=row[3],
+            description=row[4], question_set_id=row[5], started_at=row[6],
+            completed_at=row[7], last_heartbeat=row[8], question_ids_json=row[9],
+            config_json=row[10], question_filter_json=row[11], total_questions=row[12],
+            resume_count=row[13] or 0, created_at=row[14],
         )
 
     def to_dict(self) -> dict:
         return {
             "id": self.id, "name": self.name, "status": self.status,
+            "agent_version": self.agent_version,
+            "description": self.description,
+            "question_set_id": self.question_set_id,
             "started_at": _ts(self.started_at), "completed_at": _ts(self.completed_at),
             "last_heartbeat": _ts(self.last_heartbeat),
             "question_ids_json": self.question_ids_json,

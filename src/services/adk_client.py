@@ -59,7 +59,7 @@ def stop_server() -> None:
 def send_nlq(nlq: str, timeout_ms: int = 30000) -> AdkResponse:
     """Send an NLQ to the ADK api_server and return a structured response."""
     cfg = get_config()
-    url = f"{cfg.adk_base_url}/run"
+    url = f"{cfg.adk_base_url}{cfg.adk_run_path}"
     t_start = time.monotonic()
 
     try:
@@ -78,11 +78,19 @@ def send_nlq(nlq: str, timeout_ms: int = 30000) -> AdkResponse:
             )
 
         data = resp.json()
-        # ADK response shape — adjust field names to match your agent's output
+
+        def _pick(field_csv: str):
+            """Return the first non-empty value from a comma-separated list of field names."""
+            for name in field_csv.split(","):
+                name = name.strip()
+                if name and data.get(name):
+                    return data[name]
+            return None
+
         return AdkResponse(
-            sql_generated=data.get("sql_generated") or data.get("sql"),
-            route=data.get("route"),
-            agent_response=data.get("response") or data.get("output") or str(data),
+            sql_generated=_pick(cfg.adk_field_sql),
+            route=_pick(cfg.adk_field_route),
+            agent_response=_pick(cfg.adk_field_response) or str(data),
             runtime_ms=runtime_ms,
             error=None,
         )
